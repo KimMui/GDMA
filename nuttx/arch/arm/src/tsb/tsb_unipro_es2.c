@@ -510,15 +510,6 @@ static uint16_t unipro_get_tx_free_buffer_space(struct cport *cport)
 }
 
 /**
- * @brief           Set EOM (End Of Message) flag
- * @param[in]       cport: CPort handle
- */
-static inline void unipro_set_eom_flag(struct cport *cport)
-{
-    putreg8(1, CPORT_EOM_BIT(cport));
-}
-
-/**
  * @brief UniPro debug dump
  */
 static void dump_regs(void) {
@@ -727,10 +718,11 @@ static void unipro_dequeue_tx_buffer(struct unipro_buffer *buffer, int status)
  *                  buffer is enterily sent (return value == 0)).
  * @param[in]       operation: greybus loopback operation
  */
-static int unipro_send_tx_buffer(struct cport *cport)
+static int unipro_send_tx_buffer(int dma_chan, struct cport *cport)
 {
     irqstate_t flags;
     struct unipro_buffer *buffer;
+    bool eom;
     int retval;
 
     if (!cport) {
@@ -746,11 +738,24 @@ static int unipro_send_tx_buffer(struct cport *cport)
 
     buffer = list_entry(cport->tx_fifo.next, struct unipro_buffer, list);
 
+    len = buffer->len - buffer->bytes_sent;
+    cport_space = unipro_get_tx_free_buffer_space(cport);
+
+    if (len <= cport_space) {
+        eom = 1;
+    } else {
+        eom = 0;
+        len = cport_space;
+    }
+
+    unipro_dma_info[dma_chan].cport = cport;
+    unipro_dma_info[dma_chan].len = len;
+
     irqrestore(flags);
 
-    retval = unipro_send_sync(cport->cportid,
+    retval = unipro_send_sync(dma_chan, cport->cportid,
                               buffer->data + buffer->byte_sent,
-                              buffer->len - buffer->byte_sent, buffer->som);
+                              len, buffer->som, eom);
     if (retval < 0) {
         unipro_dequeue_tx_buffer(buffer, retval);
         lldbg("unipro_send_sync failed. Dropping message...\n");
@@ -758,13 +763,6 @@ static int unipro_send_tx_buffer(struct cport *cport)
     }
 
     buffer->som = false;
-    buffer->byte_sent += retval;
-
-    if (buffer->byte_sent >= buffer->len) {
-        unipro_set_eom_flag(cport);
-        unipro_dequeue_tx_buffer(buffer, 0);
-        return 0;
-    }
 
     return -EBUSY;
 }
@@ -778,6 +776,7 @@ static int unipro_send_tx_buffer(struct cport *cport)
 static void *unipro_tx_worker(void *data)
 {
     int i;
+    static int cportid = 0;
     bool is_busy;
     int retval;
 
@@ -785,24 +784,40 @@ static void *unipro_tx_worker(void *data)
         /* Block until a buffer is pending on any CPort */
         sem_wait(&worker.tx_fifo_lock);
 
-        do {
-            is_busy = false;
+	    for (i = 0; i < cport_max(); i++) {
+            dma_chan = dma_find_idle_chan();
+            if (dma_chan < 0) /* No idle DMA channels */
+                break;
 
-            for (i = 0; i < cport_max(); i++) {
-                /* Browse all CPorts sending any pending buffers */
-                retval = unipro_send_tx_buffer(cport_handle(i));
-                if (retval == -EBUSY) {
-                    /*
-                     * Buffer only partially sent, have to try again for
-                     * remaining part.
-                     */
-                    is_busy = true;
-                }
-            }
-        } while (is_busy); /* exit when CPort(s) current pending buffer sent */
+            /* Browse all CPorts sending any pending buffers */
+            unipro_send_tx_buffer(dma_chan, cport_handle(cportid));
+
+            cportid = (cportid + 1) % cport_max();
+        }
     }
 
     return NULL;
+}
+
+static void unipro_dma_irq_callback(int *dma_chan, int error)
+{
+    int cportid;
+
+    if (error) { /* DMA encountered an error */
+        /* Do something intelligent */
+    }
+
+    cportid = unipro_dma_info[dma_chan].cportid;
+    len = unipro_dma_info[dma_chan].len;
+
+    cport[cportid].tx_data_len -= len;
+
+    buffer->byte_sent += len;
+
+    if (buffer->byte_sent >= buffer->len)
+        unipro_dequeue_tx_buffer(buffer, 0);
+
+    sem_post(&worker.tx_fifo_lock);
 }
 
 /**
@@ -942,7 +957,6 @@ int unipro_send(unsigned int cportid, const void *buf, size_t len)
         sent += ret;
         som = false;
     }
-    unipro_set_eom_flag(cport);
 
     return 0;
 }
@@ -955,11 +969,10 @@ int unipro_send(unsigned int cportid, const void *buf, size_t len)
  * @param[in]       len: size of data to send
  * @param[in]       som: "start of message" flag
  */
-static int unipro_send_sync(unsigned int cportid,
-                            const void *buf, size_t len, bool som)
+static int unipro_send_sync(int dma_chan, unsigned int cportid,
+                            const void *buf, size_t len, bool som, bool eom)
 {
     struct cport *cport;
-    uint16_t count;
     uint8_t *tx_buf;
 
     if (len > CPORT_BUF_SIZE) {
@@ -988,19 +1001,9 @@ static int unipro_send_sync(unsigned int cportid,
         tx_buf = cport->tx_buf;
     }
 
-    count = unipro_get_tx_free_buffer_space(cport);
-    if (!count) {
-        /* No free space in TX FIFO, cannot send anything. */
-        DBG_UNIPRO("No free space in CP%d Tx Buffer\n", cportid);
-        return 0;
-    } else if (count > len) {
-        count = len;
-    }
     /* Copy message data in CPort Tx FIFO */
-    DBG_UNIPRO("Sending %u bytes to CP%d\n", count, cportid);
-    memcpy(tx_buf, buf, count);
-
-    return (int) count;
+    DBG_UNIPRO("Sending %u bytes to CP%d\n", len, cportid);
+    return dma_xfer(dma_chan, buf, tx_buf, len, eom);
 }
 
 /**
