@@ -127,6 +127,18 @@ bundle = 1
 id = 12
 protocol = 0x11
 
+; I2S_MGMT protocol on CPort 13
+[cport-descriptor "13"]
+bundle = 1
+id = 13
+protocol = 0x0a
+
+; I2S_RECEIVER protocol on CPort 14
+[cport-descriptor "14"]
+bundle = 1
+id = 14
+protocol = 0x12
+
 ; Bundle 1
 ; It is unclear what the 'class' field should be set to
 [bundle-descriptor "1"]
