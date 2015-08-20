@@ -74,6 +74,21 @@ config ARCH_CHIP_DMA_MEMCPY
 		Enable the pseudo DMA driver that uses memcpy.
 
 choice
+	prompt "UniPro Data Transmit Method"
+	default ARCH_CHIP_UNIPRO_TX_MEMCPY
+	depends on TSB_CHIP_REV_ES2
+	---help---
+		Choose the method for transmitting UniPro data.
+
+config ARCH_CHIP_UNIPRO_TX_MEMCPY
+	bool "memcpy"
+	select ARCH_CHIP_DMA_MEMCPY
+	---help---
+		Use the memcpy pseudo DMA driver to transmit UniPro data.
+
+endchoice
+
+choice
 	prompt "Toshiba PinShare1 conflict"
 	default ARCH_CHIP_PINSHARE1_NONE
 	depends on ARCH_CHIP_GPBRIDGE
