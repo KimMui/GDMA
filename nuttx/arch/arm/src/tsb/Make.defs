@@ -81,6 +81,10 @@ CHIP_CSRCS += tsb_device_table.c
 CHIP_CSRCS += tsb_driver.c
 endif
 
+ifeq ($(CONFIG_ARCH_CHIP_DMA_MEMCPY),y)
+CHIP_CSRCS += tsb_dma_memcpy.c
+endif
+
 ifeq ($(CONFIG_ARCH_CHIP_TSB_PLL),y)
 CHIP_CSRCS += tsb_pll.c
 endif

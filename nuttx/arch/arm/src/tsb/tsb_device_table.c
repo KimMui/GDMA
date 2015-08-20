@@ -38,6 +38,7 @@
 #include <nuttx/device_uart.h>
 #include <nuttx/usb.h>
 #include <nuttx/usb_device.h>
+#include <nuttx/device_dma.h>
 
 #include <arch/irq.h>
 
@@ -236,6 +237,14 @@ static struct device tsb_devices[] = {
         .id             = 0,
         .resources      = tsb_uart_resources,
         .resource_count = ARRAY_SIZE(tsb_uart_resources),
+    },
+#endif
+#ifdef CONFIG_ARCH_CHIP_DMA_MEMCPY
+    {
+        .type           = DEVICE_TYPE_DMA_HW,
+        .name           = "tsb_dma_memcpy",
+        .desc           = "TSB memcpy Pseudo DMA Device",
+        .id             = 0,
     },
 #endif
 };

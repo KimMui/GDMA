@@ -67,6 +67,12 @@ config TSB_CHIP_REV
 	string
 	default "es2" if TSB_CHIP_REV_ES2
 
+config ARCH_CHIP_DMA_MEMCPY
+	bool "memcpy Pseudo DMA Driver"
+	select DEVICE_CORE
+	---help---
+		Enable the pseudo DMA driver that uses memcpy.
+
 choice
 	prompt "Toshiba PinShare1 conflict"
 	default ARCH_CHIP_PINSHARE1_NONE

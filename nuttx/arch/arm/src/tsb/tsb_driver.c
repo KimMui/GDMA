@@ -30,6 +30,7 @@
 
 #include <nuttx/device.h>
 
+extern struct device_driver tsb_dma_memcpy_driver;
 extern struct device_driver tsb_usb_hcd_driver;
 extern struct device_driver tsb_usb_pcd_driver;
 extern struct device_driver tsb_pll_driver;
@@ -40,6 +41,10 @@ extern struct device_driver tsb_uart_driver;
 
 void tsb_driver_register(void)
 {
+#ifdef CONFIG_ARCH_CHIP_DMA_MEMCPY
+    device_register_driver(&tsb_dma_memcpy_driver);
+#endif
+
 #ifdef CONFIG_ARCH_CHIP_USB_HCD
     device_register_driver(&tsb_usb_hcd_driver);
 #endif
