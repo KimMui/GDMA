@@ -41,6 +41,9 @@
 #define TSB_DMA_MEMCPY_DMA_CHANNELS     8 /* Emulate 8 channel DMA ctlr */
 
 struct tsb_dma_memcpy_chan_info {
+	int                 (*transfer)(struct device *dev, unsigned int chan,
+	                                void *src, void *dst, size_t len,
+									device_dma_transfer_arg *arg);
     sem_t               lock;
     device_dma_callback callback;
 };
@@ -72,9 +75,31 @@ static int tsb_dma_memcpy_register_callback(struct device *dev,
     return 0;
 }
 
+static int tsb_dma_memcpy_unipro_tx_transfer(struct device *dev, unsigned int chan,
+                                             void *src, void *dst, size_t len,
+											 device_dma_transfer_arg *arg)
+{
+    struct tsb_dma_memcpy_info *info = device_get_private(dev);
+    device_dma_unipro_tx_arg *unipro_tx_arg = (device_dma_unipro_tx_arg*)arg;
+
+    memcpy(dst, src, len);
+
+    if (info->chan_info[chan].callback) {
+        /* Ignore the cmd returned */
+        info->chan_info[chan].callback(dev, chan, DEVICE_DMA_EVENT_COMPLETED,
+                                       arg);
+    }
+
+    if (unipro_tx_arg->eom_addr) {
+        putreg8(1, unipro_tx_arg->eom_addr);
+    }
+
+    return 0;
+}
+
 static int tsb_dma_memcpy_transfer(struct device *dev, unsigned int chan,
                                    void *src, void *dst, size_t len,
-                                   void *eom_addr, void *arg)
+								   device_dma_transfer_arg *arg)
 {
     struct tsb_dma_memcpy_info *info = device_get_private(dev);
 
@@ -88,19 +113,70 @@ static int tsb_dma_memcpy_transfer(struct device *dev, unsigned int chan,
 
     sem_wait(&info->chan_info[chan].lock);
 
-    memcpy(dst, src, len);
-
-    if (info->chan_info[chan].callback) {
-        /* Ignore the cmd returned */
-        info->chan_info[chan].callback(dev, chan, DEVICE_DMA_EVENT_COMPLETED,
-                                       arg);
-    }
-
-    if (eom_addr) {
-        putreg8(1, eom_addr);
+    if (info->chan_info[chan].transfer != NULL) {
+    	info->chan_info[chan].transfer(dev, chan, src, dst, len, arg);
     }
 
     sem_post(&info->chan_info[chan].lock);
+
+    return 0;
+}
+
+static int tsb_dma_memcpy_allocate_channel(struct device *dev, enum device_dma_channel_type type,
+		                                   unsigned int *chan)
+{
+    struct tsb_dma_memcpy_info *info = device_get_private(dev);
+    int    index;
+
+    if (!info) {
+        return -EIO;
+    }
+
+    if (chan == NULL) {
+        return -EINVAL;
+    }
+
+    *chan = DEVICE_DMA_INVALID_CHANNEL;
+
+    for (index = 0; index < TSB_DMA_MEMCPY_DMA_CHANNELS; index++) {
+    	if (info->chan_info[index].transfer == NULL) {
+    	    switch (type) {
+    	        case DEVICE_DMA_UNIPRO_TX_CHANNEL:
+    	        	info->chan_info[index].transfer = tsb_dma_memcpy_unipro_tx_transfer;
+    	        	*chan = index;
+    	        	return 0;
+    	        	break;
+    	        case DEVICE_DMA_AUDIO_INPUT_CHANENEL:
+    	        case DEVICE_DMA_AUDIO_OUTPUT_CHANNEL:
+    	        case DEVICE_DMA_MEMORY_TO_MEMORY_CHANNEL:
+    	        case DEVICE_DMA_MEMORY_TO_PERIPHERAL_CHANNEL:
+    	        case DEVICE_DMA_PERIPHERAL_TO_MEMORY_CHANNEL:
+    	        	return -EINVAL;
+    	        	break;
+    	        default:
+    	        	return -EINVAL;
+    	        	break;
+    	    }
+    	}
+    }
+
+    return -ENOMEM;;
+}
+
+static int tsb_dma_memcpy_release_channel(struct device *dev, unsigned int *chan)
+{
+    struct tsb_dma_memcpy_info *info = device_get_private(dev);
+
+    if (!info) {
+        return -EIO;
+    }
+
+    if ((chan == NULL) || (*chan >= TSB_DMA_MEMCPY_DMA_CHANNELS)) {
+        return -EINVAL;
+    }
+
+    info->chan_info[*chan].transfer = NULL;
+    *chan = DEVICE_DMA_INVALID_CHANNEL;
 
     return 0;
 }
@@ -157,7 +233,9 @@ static void tsb_dma_memcpy_close(struct device *dev)
 
 static struct device_dma_type_ops tsb_dma_memcpy_type_ops = {
     .register_callback  = tsb_dma_memcpy_register_callback,
-    .transfer           = tsb_dma_memcpy_transfer,
+    .allocate_channel   = tsb_dma_memcpy_allocate_channel,
+    .release_channel   = tsb_dma_memcpy_release_channel,
+	.transfer           = tsb_dma_memcpy_transfer,
 };
 
 static struct device_driver_ops tsb_dma_memcpy_driver_ops = {

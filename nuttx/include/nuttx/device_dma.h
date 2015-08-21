@@ -38,6 +38,8 @@
 
 #define DEVICE_TYPE_DMA_HW                 "dma"
 
+#define DEVICE_DMA_INVALID_CHANNEL         0xFFFFFFFF
+
 enum device_dma_event {
     DEVICE_DMA_EVENT_INVALID,
     DEVICE_DMA_EVENT_BLOCKED,
@@ -52,17 +54,37 @@ enum device_dma_cmd {
     DEVICE_DMA_CMD_STOP,
 };
 
+enum device_dma_channel_type {
+	DEVICE_DMA_UNIPRO_TX_CHANNEL,
+	DEVICE_DMA_AUDIO_INPUT_CHANENEL,
+	DEVICE_DMA_AUDIO_OUTPUT_CHANNEL,
+	DEVICE_DMA_MEMORY_TO_MEMORY_CHANNEL,
+	DEVICE_DMA_MEMORY_TO_PERIPHERAL_CHANNEL,
+	DEVICE_DMA_PERIPHERAL_TO_MEMORY_CHANNEL,
+};
+
+typedef struct {
+	uint8_t    *eom_addr; // om_addr Address of EOM area (NULL means don't write to EOM area)
+} device_dma_unipro_tx_arg;
+
+typedef union {
+	device_dma_unipro_tx_arg tx_arg;
+	uint32_t   dummy;
+} device_dma_transfer_arg;
+
 typedef enum device_dma_event (*device_dma_callback)(struct device *dev,
                                                      unsigned int chan,
                                                      enum device_dma_event
-                                                                         event,
+                                                     event,
                                                      void *arg);
 
 struct device_dma_type_ops {
-    int(*register_callback)(struct device *dev, unsigned int chan,
+    int (*register_callback)(struct device *dev, unsigned int chan,
                             device_dma_callback callback);
+	int (*allocate_channel)(struct device *dev, enum device_dma_channel_type type, unsigned int *chan);
+	int (*release_channel)(struct device *dev, unsigned int *chan);
     int (*transfer)(struct device *dev, unsigned int chan, void *src, void *dst,
-                    size_t len, void *eom_addr, void *arg);
+                    size_t len, device_dma_transfer_arg *arg);
 };
 
 /**
@@ -90,6 +112,47 @@ static inline int device_dma_register_callback(struct device *dev,
 }
 
 /**
+ * @brief Allocate a DMA channel
+ * @param dev DMA device to use
+ * @param chan DMA channel to use
+ * @return 0: DMA channel allocated
+ *         -errno: Cause of failure
+ */
+static inline int device_dma_allocate_channel(struct device *dev, enum device_dma_channel_type type,
+		                                      unsigned int *chan)
+{
+    DEVICE_DRIVER_ASSERT_OPS(dev);
+
+    if (!device_is_open(dev))
+        return -ENODEV;
+
+    if (DEVICE_DRIVER_GET_OPS(dev, dma)->allocate_channel)
+        return DEVICE_DRIVER_GET_OPS(dev, dma)->allocate_channel(dev, type, chan);
+
+    return -ENOSYS;
+}
+
+/**
+ * @brief Release an allocated DMA channel
+ * @param dev DMA device to use
+ * @param chan DMA channel to use
+ * @return 0: DMA channel released
+ *         -errno: Cause of failure
+ */
+static inline int device_dma_release_channel(struct device *dev, unsigned int *chan)
+{
+    DEVICE_DRIVER_ASSERT_OPS(dev);
+
+    if (!device_is_open(dev))
+        return -ENODEV;
+
+    if (DEVICE_DRIVER_GET_OPS(dev, dma)->release_channel)
+        return DEVICE_DRIVER_GET_OPS(dev, dma)->release_channel(dev, chan);
+
+    return -ENOSYS;
+}
+
+/**
  * @brief Start a DMA transfer
  * @param dev DMA device to use
  * @param chan DMA channel to use
@@ -103,7 +166,7 @@ static inline int device_dma_register_callback(struct device *dev,
  */
 static inline int device_dma_transfer(struct device *dev, unsigned int chan,
                                       void *src, void *dst, size_t len,
-                                      void *eom_addr, void *arg)
+									  device_dma_transfer_arg *arg)
 {
     DEVICE_DRIVER_ASSERT_OPS(dev);
 
@@ -112,7 +175,7 @@ static inline int device_dma_transfer(struct device *dev, unsigned int chan,
 
     if (DEVICE_DRIVER_GET_OPS(dev, dma)->transfer)
         return DEVICE_DRIVER_GET_OPS(dev, dma)->transfer(dev, chan, src, dst,
-                                                         len, eom_addr, arg);
+                                                         len, arg);
 
     return -ENOSYS;
 }

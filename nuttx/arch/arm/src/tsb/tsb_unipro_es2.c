@@ -33,7 +33,9 @@
 #include <nuttx/irq.h>
 #include <nuttx/arch.h>
 #include <nuttx/list.h>
+#if defined (CONFIG_ARCH_CHIP_DMA_MEMCPY) || defined (ARCH_CHIP_UNIPRO_TX_MEMCPY)
 #include <nuttx/device_dma.h>
+#endif
 
 #include <nuttx/unipro/unipro.h>
 #include <nuttx/greybus/unipro.h>
@@ -111,7 +113,10 @@ struct unipro_buffer {
 #define CPB_TX_BUFFER_SPACE_OFFSET_MASK CPB_TX_BUFFER_SPACE_MASK
 
 static struct cport *cporttable;
+#if defined (CONFIG_ARCH_CHIP_DMA_MEMCPY) || defined (ARCH_CHIP_UNIPRO_TX_MEMCPY)
 static struct device *dma_dev;
+static unsigned int dma_channel = DEVICE_DMA_INVALID_CHANNEL;
+#endif
 
 #define APBRIDGE_CPORT_MAX 44 // number of CPorts available on the APBridges
 #define GPBRIDGE_CPORT_MAX 16 // number of CPorts available on the GPBridges
@@ -814,11 +819,14 @@ static int unipro_send_tx_buffer(struct cport *cport)
     buffer->byte_sent += retval;
 
     if (buffer->byte_sent >= buffer->len) {
+#if !defined (CONFIG_ARCH_CHIP_DMA_MEMCPY) && !defined (ARCH_CHIP_UNIPRO_TX_MEMCPY)
+    	unipro_set_eom_flag(cport);
+#endif
         unipro_dequeue_tx_buffer(buffer, 0);
         return 0;
     }
 
-    return -EBUSY;
+   	return -EBUSY;
 }
 
 /**
@@ -867,10 +875,15 @@ void unipro_init(void)
     struct cport *cport;
     size_t table_size = sizeof(struct cport) * unipro_cport_count();
 
+#if defined (CONFIG_ARCH_CHIP_DMA_MEMCPY) || defined (ARCH_CHIP_UNIPRO_TX_MEMCPY)
     dma_dev = device_open(DEVICE_TYPE_DMA_HW, 0);
     if (!dma_dev) {
         return;
     }
+
+    device_dma_allocate_channel(dma_dev, DEVICE_DMA_UNIPRO_TX_CHANNEL, &dma_channel);
+    lldbg("===> %x", dma_channel, &dma_channel);
+#endif
 
     sem_init(&worker.tx_fifo_lock, 0, 0);
 
@@ -1025,6 +1038,10 @@ int unipro_send(unsigned int cportid, const void *buf, size_t len)
         som = false;
     }
 
+#if !defined (CONFIG_ARCH_CHIP_DMA_MEMCPY) && !defined (ARCH_CHIP_UNIPRO_TX_MEMCPY)
+    unipro_set_eom_flag(cport);
+#endif
+
     return 0;
 }
 
@@ -1042,7 +1059,7 @@ static int unipro_send_sync(unsigned int cportid,
     struct cport *cport;
     uint16_t count;
     uint8_t *tx_buf;
-    void *eom_addr;
+    device_dma_unipro_tx_arg tx_arg;
     int ret;
 
     if (len > CPORT_BUF_SIZE) {
@@ -1079,17 +1096,21 @@ static int unipro_send_sync(unsigned int cportid,
     } else if (count > len) {
         count = len;
     }
+
+#if defined (CONFIG_ARCH_CHIP_DMA_MEMCPY) || defined (ARCH_CHIP_UNIPRO_TX_MEMCPY)
     /* Copy message data in CPort Tx FIFO */
     DBG_UNIPRO("Sending %u bytes to CP%d\n", count, cportid);
 
-    eom_addr = (count == len) ? CPORT_EOM_BIT(cport) : NULL;
+    tx_arg.eom_addr = (count == len) ? CPORT_EOM_BIT(cport) : NULL;
 
-    ret = device_dma_transfer(dma_dev, 0, (void *)buf, tx_buf, count, eom_addr,
-                              NULL);
+    ret = device_dma_transfer(dma_dev, dma_channel, (void *)buf, tx_buf, count, &tx_arg);
     if (ret) {
         DBG_UNIPRO("ERROR: DMA Failed: %d\n", -ret);
         return ret;
     }
+#else
+    memcpy(tx_buf, buf, len);
+#endif
 
     return (int) count;
 }
